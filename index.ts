@@ -3,7 +3,7 @@ import * as aws from "@pulumi/aws";
 import { getStack } from "@pulumi/pulumi";
 
 
-const bucket = new aws.s3.Bucket("my-bucket", {bucket: `karega-${getStack}`});
+const bucket = new aws.s3.Bucket("my-bucket", {bucket: `karega-${getStack()}`});
 
 // IAM role Firehose assumes to write to the bucket
 const firehoseRole = new aws.iam.Role("firehose-role", {
