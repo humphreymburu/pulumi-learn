@@ -1,43 +1,86 @@
 import * as pulumi from "@pulumi/pulumi";
 import * as aws from "@pulumi/aws";
 import { getStack } from "@pulumi/pulumi";
+import { Environment } from "@pulumi/aws/appconfig";
+
+const environment = pulumi.getStack();
+
+if(!["dev", "prod"].includes(environment)) {
+    throw new Error(`Unsupported environment: ${environment}`);
+}
 
 
-const bucket = new aws.s3.Bucket("my-bucket", {bucket: `karega-${getStack()}`});
+const config = new pulumi.Config();
+const BucketName = config.require("bucketName");
+
+const bucket = new aws.s3.Bucket("my-bucket", 
+    {
+        bucket: BucketName,
+        forceDestroy: false,
+        tags: {
+            Application: "buniwa",
+            Environment: environment
+        }
+    }
+);
+
+//public access
+new aws.s3.BucketPublicAccessBlock("bucket-public-access", {
+  bucket: bucket.id,
+  blockPublicAcls: true,
+  ignorePublicAcls: true,
+  blockPublicPolicy: true,
+  restrictPublicBuckets: true,
+});
+
 
 // IAM role Firehose assumes to write to the bucket
 const firehoseRole = new aws.iam.Role("firehose-role", {
-    assumeRolePolicy: JSON.stringify({
-        Version: "2012-10-17",
-        Statement: [{
-            Effect: "Allow",
-            Action: "sts:AssumeRole",
-            Principal: { Service: "firehose.amazonaws.com" },
-        }],
-    }),
+  assumeRolePolicy: aws.iam.getPolicyDocumentOutput({
+    statements: [{
+      effect: "Allow",
+      actions: ["sts:AssumeRole"],
+      principals: [{
+        type: "Service",
+        identifiers: ["firehose.amazonaws.com"],
+      }],
+    }],
+  }).json,
 });
 
-new aws.iam.RolePolicy("firehose-policy", {
+const firehosePolicy = new aws.iam.RolePolicy(
+  "firehose-policy",
+  {
     role: firehoseRole.id,
-    policy: pulumi.jsonStringify({
-        Version: "2012-10-17",
-        Statement: [{
-            Effect: "Allow",
-            Action: [
-                "s3:AbortMultipartUpload",
-                "s3:GetBucketLocation",
-                "s3:GetObject",
-                "s3:ListBucket",
-                "s3:ListBucketMultipartUploads",
-                "s3:PutObject",
-            ],
-            Resource: [bucket.arn, pulumi.interpolate`${bucket.arn}/*`],
-        }],
-    }),
-});
-
+    policy: aws.iam.getPolicyDocumentOutput({
+      statements: [
+        {
+          effect: "Allow",
+          actions: [
+            "s3:PutObject",
+            "s3:GetObject",
+            "s3:AbortMultipartUpload",
+          ],
+          resources: [
+            pulumi.interpolate`${bucket.arn}/*`,
+          ],
+        },
+        {
+          effect: "Allow",
+          actions: [
+            "s3:GetBucketLocation",
+            "s3:ListBucket",
+            "s3:ListBucketMultipartUploads",
+          ],
+          resources: [bucket.arn],
+        },
+      ],
+    }).json,
+  },
+);
 // Firehose delivery stream that writes to the bucket
-const firehose = new aws.kinesis.FirehoseDeliveryStream("my-firehose", {
+const firehose = new aws.kinesis.FirehoseDeliveryStream(
+    "my-firehose", {
     destination: "extended_s3",
     extendedS3Configuration: {
         roleArn: firehoseRole.arn,
@@ -45,8 +88,9 @@ const firehose = new aws.kinesis.FirehoseDeliveryStream("my-firehose", {
         bufferingSize: 5,      // MB
         bufferingInterval: 300, // seconds
     },
-});
+}, { dependsOn: [bucket] });
 
 // Export the name of the bucket and the stream
 export const bucketName = bucket.id;
 export const firehoseName = firehose.name;
+export const stackName = environment;
